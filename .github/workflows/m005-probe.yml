@@ -58,9 +58,9 @@ jobs:
           set -x
           swift build -c debug --product container --product container-apiserver
           ls -la .build/debug | sed -n '1,120p'
-test -x .build/debug/container || (echo "missing container binary" && exit 1)
-test -x .build/debug/container-apiserver || (echo "missing container-apiserver binary" && exit 1)
-.build/debug/container --help | head -80
+          test -x .build/debug/container || (echo "missing container binary" && exit 1)
+          test -x .build/debug/container-apiserver || (echo "missing container-apiserver binary" && exit 1)
+          .build/debug/container --help | head -80
 
       - name: Try to start container system
         continue-on-error: true
@@ -104,4 +104,5 @@ test -x .build/debug/container-apiserver || (echo "missing container-apiserver b
         run: |
           set -x
           find "$HOME/Library/Application Support" -maxdepth 4 -iname '*container*' -print 2>/dev/null || true
+
 
