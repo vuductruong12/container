@@ -53,34 +53,41 @@ jobs:
 
           grep -n "M005 probe\|validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
 
-      - name: Build patched container CLI
+      - name: Build patched container CLI and apiserver
         run: |
           set -x
-          swift build -c debug --product container --product container-apiserver
-          ls -la .build/debug | sed -n '1,120p'
-          test -x .build/debug/container || (echo "missing container binary" && exit 1)
-          test -x .build/debug/container-apiserver || (echo "missing container-apiserver binary" && exit 1)
-          .build/debug/container --help | head -80
+          swift build -c debug --product container
+          swift build -c debug --product container-apiserver
+
+          BIN_DIR="$(swift build -c debug --show-bin-path)"
+          echo "BIN_DIR=$BIN_DIR" | tee -a "$GITHUB_ENV"
+
+          echo "Binary dir: $BIN_DIR"
+          ls -la "$BIN_DIR" | sed -n '1,180p'
+
+          test -x "$BIN_DIR/container" || (echo "missing container binary at $BIN_DIR/container" && exit 1)
+          test -x "$BIN_DIR/container-apiserver" || (echo "missing container-apiserver binary at $BIN_DIR/container-apiserver" && exit 1)
+
+          "$BIN_DIR/container" --help | head -80
 
       - name: Try to start container system
         continue-on-error: true
         run: |
           set -x
-          .build/debug/container system start || true
-          sleep 10
-          .build/debug/container system status || true
+          echo "BIN_DIR=$BIN_DIR"
+          ls -la "$BIN_DIR" | sed -n '1,120p'
 
-      - name: Baseline official-style invalid name check with unpatched source evidence
-        run: |
-          echo "The official CLI source validates container IDs before create:"
-          grep -n "validEntityName(id)" Sources/ContainerCommands/Container/ContainerRun.swift || true
-          grep -n "validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
+          "$BIN_DIR/container" system start || true
+          sleep 10
+          "$BIN_DIR/container" system status || true
+          launchctl print gui/$(id -u)/com.apple.container.apiserver || true
 
       - name: M005 traversal create attempt
         continue-on-error: true
         run: |
           set -x
-          .build/debug/container create --name '../m005-poc' docker.io/library/alpine:latest || true
+          echo "BIN_DIR=$BIN_DIR"
+          "$BIN_DIR/container" create --name '../m005-poc' docker.io/library/alpine:latest || true
 
       - name: Search for M005 artifacts
         run: |
@@ -103,6 +110,4 @@ jobs:
       - name: Show container-related app support tree
         run: |
           set -x
-          find "$HOME/Library/Application Support" -maxdepth 4 -iname '*container*' -print 2>/dev/null || true
-
-
+          find "$HOME/Library/Application Support" -maxdepth 5 -iname '*container*' -print 2>/dev/null || true
