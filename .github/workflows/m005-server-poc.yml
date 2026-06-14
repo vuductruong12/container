@@ -1,0 +1,40 @@
+﻿name: M005 server-side traversal PoC
+
+on:
+  workflow_dispatch:
+
+jobs:
+  m005-server-poc:
+    runs-on: macos-26
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          set -x
+          sw_vers
+          uname -a
+          uname -m
+          swift --version
+          pwd
+
+      - name: Run M005 server-side PoC test
+        run: |
+          set -x
+          swift test --filter M005ServerTraversalPoCTests 2>&1 | tee m005-server-poc.log
+
+      - name: Show M005 PoC result
+        if: always()
+        run: |
+          set -x
+          echo "=== m005-server-poc-result.txt ==="
+          cat "$GITHUB_WORKSPACE/m005-server-poc-result.txt" || true
+
+          echo "=== m005-poc artifact paths ==="
+          find "$GITHUB_WORKSPACE" -path '*m005-poc*' -print 2>/dev/null || true
+
+          echo "=== tail test log ==="
+          tail -200 m005-server-poc.log || true
