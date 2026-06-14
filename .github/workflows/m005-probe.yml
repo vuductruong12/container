@@ -6,7 +6,7 @@ on:
 jobs:
   m005-probe:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -50,28 +50,55 @@ jobs:
 
           grep -n "M005 probe\|validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
 
-      - name: Build patched container CLI and apiserver
+      - name: Build patched CLI, apiserver, and network plugin
         run: |
           set -x
           swift build -c debug --product container
           swift build -c debug --product container-apiserver
+          swift build -c debug --product container-network-vmnet
 
           BIN_DIR="$(swift build -c debug --show-bin-path)"
+          INSTALL_ROOT="$(dirname "$BIN_DIR")"
+
           echo "BIN_DIR=$BIN_DIR" | tee -a "$GITHUB_ENV"
+          echo "INSTALL_ROOT=$INSTALL_ROOT" | tee -a "$GITHUB_ENV"
 
           echo "Binary dir: $BIN_DIR"
-          ls -la "$BIN_DIR" | grep -E 'container$|container-apiserver$|container-|apiserver' || true
+          ls -la "$BIN_DIR" | grep -E 'container$|container-apiserver$|container-network-vmnet$|container-|apiserver|vmnet' || true
 
           test -x "$BIN_DIR/container" || (echo "missing container binary at $BIN_DIR/container" && exit 1)
           test -x "$BIN_DIR/container-apiserver" || (echo "missing container-apiserver binary at $BIN_DIR/container-apiserver" && exit 1)
+          test -x "$BIN_DIR/container-network-vmnet" || (echo "missing container-network-vmnet binary at $BIN_DIR/container-network-vmnet" && exit 1)
 
           "$BIN_DIR/container" --help | head -50
           "$BIN_DIR/container-apiserver" --help || true
+          "$BIN_DIR/container-network-vmnet" --help || true
+
+      - name: Stage network plugin layout
+        run: |
+          set -x
+
+          PLUGIN_ROOT="$INSTALL_ROOT/libexec/container-plugins"
+          NETWORK_PLUGIN_DIR="$PLUGIN_ROOT/container-network-vmnet"
+
+          mkdir -p "$NETWORK_PLUGIN_DIR/bin"
+
+          cp Sources/Plugins/NetworkVmnet/config.toml "$NETWORK_PLUGIN_DIR/config.toml"
+          cp "$BIN_DIR/container-network-vmnet" "$NETWORK_PLUGIN_DIR/bin/container-network-vmnet"
+          chmod +x "$NETWORK_PLUGIN_DIR/bin/container-network-vmnet"
+
+          echo "PLUGIN_ROOT=$PLUGIN_ROOT" | tee -a "$GITHUB_ENV"
+          echo "NETWORK_PLUGIN_DIR=$NETWORK_PLUGIN_DIR" | tee -a "$GITHUB_ENV"
+
+          echo "=== staged plugin tree ==="
+          find "$PLUGIN_ROOT" -maxdepth 5 -print
+
+          echo "=== network config.toml ==="
+          cat "$NETWORK_PLUGIN_DIR/config.toml"
 
       - name: Write timeout runner
         run: |
           cat > /tmp/run_timeout.py <<'PY'
-          import os
           import shlex
           import subprocess
           import sys
@@ -102,11 +129,16 @@ jobs:
               sys.exit(0)
           PY
 
-      - name: Try to start container system with hard timeout
+      - name: Try to start container system with network plugin
         continue-on-error: true
         run: |
           set -x
           echo "BIN_DIR=$BIN_DIR"
+          echo "INSTALL_ROOT=$INSTALL_ROOT"
+          echo "PLUGIN_ROOT=$PLUGIN_ROOT"
+
+          echo "=== plugin tree before start ==="
+          find "$INSTALL_ROOT/libexec/container-plugins" -maxdepth 5 -print || true
 
           python3 /tmp/run_timeout.py 90 "$BIN_DIR/container" system start
 
@@ -125,7 +157,7 @@ jobs:
           echo "=== recent logs ==="
           log show --last 5m --style compact --predicate 'process CONTAINS "container"' || true
 
-      - name: M005 traversal create attempt with hard timeout
+      - name: M005 traversal create attempt with network plugin
         continue-on-error: true
         run: |
           set -x
