@@ -21,17 +21,13 @@ jobs:
           xcodebuild -version || true
           swift --version || true
           pwd
-          ls -la
 
-      - name: Show original validation line
+      - name: Patch CLI-side container ID validation for M005 probe
         run: |
           set -x
           grep -n "validEntityName(id)" Sources/ContainerCommands/Container/ContainerCreate.swift || true
           grep -n "func validEntityName" -A 8 Sources/Services/ContainerAPIService/Client/Utility.swift || true
 
-      - name: Patch CLI-side container ID validation for M005 probe
-        run: |
-          set -x
           python3 - <<'PY'
           from pathlib import Path
 
@@ -64,77 +60,82 @@ jobs:
           echo "BIN_DIR=$BIN_DIR" | tee -a "$GITHUB_ENV"
 
           echo "Binary dir: $BIN_DIR"
-          ls -la "$BIN_DIR" | sed -n '1,180p'
+          ls -la "$BIN_DIR" | grep -E 'container$|container-apiserver$|container-|apiserver' || true
 
           test -x "$BIN_DIR/container" || (echo "missing container binary at $BIN_DIR/container" && exit 1)
           test -x "$BIN_DIR/container-apiserver" || (echo "missing container-apiserver binary at $BIN_DIR/container-apiserver" && exit 1)
 
-          "$BIN_DIR/container" --help | head -80
+          "$BIN_DIR/container" --help | head -50
           "$BIN_DIR/container-apiserver" --help || true
 
-      - name: Try to start container system with timeout
+      - name: Write timeout runner
+        run: |
+          cat > /tmp/run_timeout.py <<'PY'
+          import os
+          import shlex
+          import subprocess
+          import sys
+
+          timeout = int(sys.argv[1])
+          cmd = sys.argv[2:]
+
+          print("RUN:", " ".join(shlex.quote(x) for x in cmd), flush=True)
+          print("TIMEOUT:", timeout, "seconds", flush=True)
+
+          try:
+              p = subprocess.run(
+                  cmd,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  timeout=timeout,
+              )
+              print(p.stdout, end="", flush=True)
+              print("EXIT_CODE:", p.returncode, flush=True)
+              sys.exit(0)
+          except subprocess.TimeoutExpired as e:
+              out = e.stdout or ""
+              if isinstance(out, bytes):
+                  out = out.decode(errors="replace")
+              print(out, end="", flush=True)
+              print("TIMEOUT_EXPIRED: killed command", flush=True)
+              sys.exit(0)
+          PY
+
+      - name: Try to start container system with hard timeout
         continue-on-error: true
-        timeout-minutes: 3
         run: |
           set -x
           echo "BIN_DIR=$BIN_DIR"
-          ls -la "$BIN_DIR" | sed -n '1,120p'
 
-          python3 - <<'PY'
-          import subprocess, sys, os, signal, time
-
-          bin_dir = os.environ["BIN_DIR"]
-          cmd = [f"{bin_dir}/container", "system", "start"]
-          print("Running with 90s timeout:", " ".join(cmd), flush=True)
-
-          p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-          start = time.time()
-
-          try:
-              while True:
-                  line = p.stdout.readline()
-                  if line:
-                      print(line, end="", flush=True)
-                  if p.poll() is not None:
-                      print("system start exit code:", p.returncode, flush=True)
-                      sys.exit(0)
-                  if time.time() - start > 90:
-                      print("TIMEOUT: killing system start", flush=True)
-                      p.kill()
-                      try:
-                          p.wait(timeout=10)
-                      except Exception:
-                          pass
-                      sys.exit(0)
-                  time.sleep(0.2)
-          except KeyboardInterrupt:
-              p.kill()
-              raise
-          PY
+          python3 /tmp/run_timeout.py 90 "$BIN_DIR/container" system start
 
           echo "=== system status ==="
-          "$BIN_DIR/container" system status || true
+          python3 /tmp/run_timeout.py 30 "$BIN_DIR/container" system status
 
-          echo "=== launchctl print ==="
+          echo "=== launchctl print apiserver ==="
           launchctl print gui/$(id -u)/com.apple.container.apiserver || true
 
           echo "=== ps container ==="
           ps aux | grep -i container | grep -v grep || true
 
+          echo "=== app support after start ==="
+          find "$HOME/Library/Application Support" -maxdepth 5 -iname '*container*' -print 2>/dev/null || true
+
           echo "=== recent logs ==="
           log show --last 5m --style compact --predicate 'process CONTAINS "container"' || true
 
-      - name: M005 traversal create attempt
+      - name: M005 traversal create attempt with hard timeout
         continue-on-error: true
-        timeout-minutes: 3
         run: |
           set -x
           echo "BIN_DIR=$BIN_DIR"
-          "$BIN_DIR/container" create --name '../m005-poc' docker.io/library/alpine:latest || true
+          python3 /tmp/run_timeout.py 90 "$BIN_DIR/container" create --name '../m005-poc' docker.io/library/alpine:latest
 
       - name: Search for M005 artifacts
         run: |
           set -x
+
           echo "Search under HOME Library/Application Support:"
           find "$HOME/Library/Application Support" -path '*m005-poc*' -print 2>/dev/null || true
 
@@ -150,7 +151,5 @@ jobs:
               print("REAL:", os.path.realpath(p))
           PY
 
-      - name: Show container-related app support tree
-        run: |
-          set -x
+          echo "Container-related app support tree:"
           find "$HOME/Library/Application Support" -maxdepth 5 -iname '*container*' -print 2>/dev/null || true
