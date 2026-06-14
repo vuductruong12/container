@@ -164,6 +164,31 @@ jobs:
           echo "BIN_DIR=$BIN_DIR"
           python3 /tmp/run_timeout.py 90 "$BIN_DIR/container" create --name '../m005-poc' docker.io/library/alpine:latest
 
+      - name: M005 traversal create attempt with network none
+        continue-on-error: true
+        run: |
+          set -x
+          echo "BIN_DIR=$BIN_DIR"
+          python3 /tmp/run_timeout.py 90 "$BIN_DIR/container" create --network none --name '../m005-poc-nonet' docker.io/library/alpine:latest
+
+      - name: Search for M005 nonet artifacts
+        run: |
+          set -x
+          echo "Search for m005-poc-nonet:"
+          find "$HOME/Library/Application Support" -path '*m005-poc-nonet*' -print 2>/dev/null || true
+
+          echo "Search for runtime-configuration.json under m005-poc-nonet:"
+          find "$HOME/Library/Application Support" -name 'runtime-configuration.json' -path '*m005-poc-nonet*' -print 2>/dev/null || true
+
+          echo "Canonical realpaths for m005-poc-nonet:"
+          python3 - <<'PY'
+          import os, glob
+          base = os.path.expanduser("~/Library/Application Support")
+          for p in glob.glob(base + "/**/*m005-poc-nonet*", recursive=True):
+              print("PATH:", p)
+              print("REAL:", os.path.realpath(p))
+          PY
+
       - name: Search for M005 artifacts
         run: |
           set -x
