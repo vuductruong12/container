@@ -6,6 +6,7 @@ on:
 jobs:
   m005-probe:
     runs-on: macos-26
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -69,21 +70,63 @@ jobs:
           test -x "$BIN_DIR/container-apiserver" || (echo "missing container-apiserver binary at $BIN_DIR/container-apiserver" && exit 1)
 
           "$BIN_DIR/container" --help | head -80
+          "$BIN_DIR/container-apiserver" --help || true
 
-      - name: Try to start container system
+      - name: Try to start container system with timeout
         continue-on-error: true
+        timeout-minutes: 3
         run: |
           set -x
           echo "BIN_DIR=$BIN_DIR"
           ls -la "$BIN_DIR" | sed -n '1,120p'
 
-          "$BIN_DIR/container" system start || true
-          sleep 10
+          python3 - <<'PY'
+          import subprocess, sys, os, signal, time
+
+          bin_dir = os.environ["BIN_DIR"]
+          cmd = [f"{bin_dir}/container", "system", "start"]
+          print("Running with 90s timeout:", " ".join(cmd), flush=True)
+
+          p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+          start = time.time()
+
+          try:
+              while True:
+                  line = p.stdout.readline()
+                  if line:
+                      print(line, end="", flush=True)
+                  if p.poll() is not None:
+                      print("system start exit code:", p.returncode, flush=True)
+                      sys.exit(0)
+                  if time.time() - start > 90:
+                      print("TIMEOUT: killing system start", flush=True)
+                      p.kill()
+                      try:
+                          p.wait(timeout=10)
+                      except Exception:
+                          pass
+                      sys.exit(0)
+                  time.sleep(0.2)
+          except KeyboardInterrupt:
+              p.kill()
+              raise
+          PY
+
+          echo "=== system status ==="
           "$BIN_DIR/container" system status || true
+
+          echo "=== launchctl print ==="
           launchctl print gui/$(id -u)/com.apple.container.apiserver || true
+
+          echo "=== ps container ==="
+          ps aux | grep -i container | grep -v grep || true
+
+          echo "=== recent logs ==="
+          log show --last 5m --style compact --predicate 'process CONTAINS "container"' || true
 
       - name: M005 traversal create attempt
         continue-on-error: true
+        timeout-minutes: 3
         run: |
           set -x
           echo "BIN_DIR=$BIN_DIR"
