@@ -27,6 +27,28 @@ jobs:
           set -x
           swift test --filter M005ServerTraversalPoCTests 2>&1 | tee m005-server-poc.log
 
+      - name: Validate M005 PoC actually triggered
+        run: |
+          set -x
+
+          test -f "$GITHUB_WORKSPACE/m005-server-poc-result.txt"
+          test -f "$GITHUB_WORKSPACE/m005-outside-app-root-result.txt"
+          test -f "$GITHUB_WORKSPACE/m005-victim-overwrite-result.txt"
+
+          grep -q "ESCAPED_CONTAINERS_ROOT: true" "$GITHUB_WORKSPACE/m005-server-poc-result.txt"
+          grep -q "FILE_EXISTS_AT_ESCAPED_PATH: true" "$GITHUB_WORKSPACE/m005-server-poc-result.txt"
+
+          grep -q "ESCAPED_APP_ROOT: true" "$GITHUB_WORKSPACE/m005-outside-app-root-result.txt"
+          grep -q "FILE_EXISTS_AT_ESCAPED_PATH: true" "$GITHUB_WORKSPACE/m005-outside-app-root-result.txt"
+
+          grep -q "RAW_DUPLICATE_CHECK_BYPASSED: true" "$GITHUB_WORKSPACE/m005-victim-overwrite-result.txt"
+          grep -q "CANONICAL_PATH_COLLISION: true" "$GITHUB_WORKSPACE/m005-victim-overwrite-result.txt"
+          grep -q "VICTIM_CONFIG_OVERWRITTEN: true" "$GITHUB_WORKSPACE/m005-victim-overwrite-result.txt"
+
+          grep -q "Test run with 3 tests in 1 suite passed" m005-server-poc.log
+
+          echo "M005 PoC validation passed: traversal write, appRoot escape, and victim overwrite were all observed."
+
       - name: Show M005 PoC result
         if: always()
         run: |
@@ -41,8 +63,11 @@ jobs:
           echo "=== m005-victim-overwrite-result.txt ==="
           cat "$GITHUB_WORKSPACE/m005-victim-overwrite-result.txt" || true
 
-          echo "=== M005 paths under workspace ==="
-          find "$GITHUB_WORKSPACE" -path '*m005*' -print 2>/dev/null || true
+          echo "=== generated runtime-configuration.json files under M005 workdirs ==="
+          find "$GITHUB_WORKSPACE" \
+            -path '*m005*' \
+            -name 'runtime-configuration.json' \
+            -print 2>/dev/null || true
 
           echo "=== tail m005-server-poc.log ==="
           tail -300 m005-server-poc.log || true
@@ -52,7 +77,7 @@ jobs:
         run: |
           set -x
 
-          mkdir -p m005-report-attachments
+          mkdir -p m005-report-attachments/generated-runtime-configs
 
           cp Tests/ContainerAPIServiceTests/M005ServerTraversalPoCTests.swift \
             m005-report-attachments/M005ServerTraversalPoCTests.swift.txt
@@ -68,6 +93,31 @@ jobs:
 
           cp "$GITHUB_WORKSPACE/m005-victim-overwrite-result.txt" \
             m005-report-attachments/m005-victim-overwrite-result.txt || true
+
+          python3 - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          out = workspace / "m005-report-attachments" / "generated-runtime-configs"
+          out.mkdir(parents=True, exist_ok=True)
+
+          index_lines = []
+          count = 0
+
+          for p in workspace.rglob("runtime-configuration.json"):
+              if "m005" not in str(p):
+                  continue
+              count += 1
+              safe_name = f"{count:02d}_" + str(p.relative_to(workspace)).replace("/", "__")
+              dst = out / safe_name
+              shutil.copy2(p, dst)
+              index_lines.append(f"{dst.name}\n  original: {p}\n")
+
+          (out / "index.txt").write_text("\n".join(index_lines) or "No generated runtime-configuration.json files found\n")
+          print(f"copied {count} generated runtime-configuration.json files")
+          PY
 
           {
             echo "M005 server-side traversal PoC metadata"
@@ -88,32 +138,23 @@ jobs:
             echo "Command:"
             echo "swift test --filter M005ServerTraversalPoCTests"
             echo
-            echo "Expected success indicators:"
-            echo "ESCAPED_CONTAINERS_ROOT: true"
-            echo "ESCAPED_APP_ROOT: true"
-            echo "VICTIM_CONFIG_OVERWRITTEN: true"
-            echo
-            echo "PoC files included:"
-            echo "- M005ServerTraversalPoCTests.swift.txt"
-            echo "- m005-server-poc.log"
-            echo "- m005-server-poc-result.txt"
-            echo "- m005-outside-app-root-result.txt"
-            echo "- m005-victim-overwrite-result.txt"
+            echo "Required success indicators verified by workflow:"
+            echo "- ESCAPED_CONTAINERS_ROOT: true"
+            echo "- ESCAPED_APP_ROOT: true"
+            echo "- VICTIM_CONFIG_OVERWRITTEN: true"
+            echo "- Test run with 3 tests in 1 suite passed"
           } > m005-report-attachments/m005-run-metadata.txt
 
           echo "=== attachment files ==="
-          find m005-report-attachments -maxdepth 1 -type f -print -exec wc -c {} \;
+          find m005-report-attachments -type f -print -exec wc -c {} \;
 
-          echo "=== result files preview ==="
-          cat m005-report-attachments/m005-server-poc-result.txt || true
-          cat m005-report-attachments/m005-outside-app-root-result.txt || true
-          cat m005-report-attachments/m005-victim-overwrite-result.txt || true
-          cat m005-report-attachments/m005-run-metadata.txt || true
+          echo "=== generated runtime config index ==="
+          cat m005-report-attachments/generated-runtime-configs/index.txt || true
 
       - name: Upload M005 PoC attachments
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: m005-server-side-poc-attachments
-          path: m005-report-attachments/*
+          path: m005-report-attachments/**
           if-no-files-found: error
